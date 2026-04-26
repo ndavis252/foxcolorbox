@@ -10,6 +10,13 @@
     <div id="button_list">
         <button id="reset" style="width:100px">Default</button><br /><br />
     </div>
+    <div id="custom_color_section" style="margin: 6px 0; font-size: 11px; line-height: 2;">
+        <div>H <input type="range" id="hue_slider" min="0" max="360" value="200" style="width:90px; vertical-align:middle;"></div>
+        <div>S <input type="range" id="sat_slider" min="0" max="100" value="70"  style="width:90px; vertical-align:middle;"></div>
+        <div>L <input type="range" id="lit_slider" min="0" max="100" value="85"  style="width:90px; vertical-align:middle;"></div>
+        <span id="custom_color_preview" style="display:inline-block; width:60px; height:20px; border:1px solid #aaa; vertical-align:middle;"></span>
+        <button id="apply_custom" style="width:40px; vertical-align:middle;">Set</button>
+    </div>
     <div id="settings">
         <input type="checkbox" id="change_new" checked>
         <label for="change_new">Change colors<br />for new windows</label>

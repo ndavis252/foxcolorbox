@@ -13,10 +13,47 @@ because the caller is from background scripts; not by the user clicking on the e
 
 console.log("In foxcolorbox popup.js");
 
-// https://htmlcolorcodes.com/color-names/
-var all_colors = ["LightCoral", "LightSalmon", "LightPink", "LightSalmon", "PeachPuff", "Khaki", "Thistle",
-    "Violet", "LightGreen", "YellowGreen", "Turquoise", "LightSkyBlue", "Wheat", "Peru",
-    "LightGray", "DarkGray"];
+// Tailwind 200-level palette — evenly spread hues, low saturation
+var all_colors = [
+    { name: "Rose",       color: "#fecdd3" },
+    { name: "Peach",      color: "#fed7aa" },
+    { name: "Butter",     color: "#fde68a" },
+    { name: "Lime",       color: "#d9f99d" },
+    { name: "Sage",       color: "#bbf7d0" },
+    { name: "Mint",       color: "#99f6e4" },
+    { name: "Sky",        color: "#bae6fd" },
+    { name: "Periwinkle", color: "#c7d2fe" },
+    { name: "Lavender",   color: "#ddd6fe" },
+    { name: "Lilac",      color: "#e9d5ff" },
+    { name: "Blush",      color: "#fbcfe8" },
+    { name: "Fog",        color: "#e2e8f0" },
+];
+
+function hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => {
+        const k = (n + h / 30) % 12;
+        return Math.round(255 * (l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)))
+            .toString(16).padStart(2, '0');
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+// returns '#000' or '#fff' depending on the perceived brightness of a color
+function getTextColor(color) {
+    try {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 1;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, 1, 1);
+        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+        return (0.299 * r + 0.587 * g + 0.114 * b) > 128 ? '#000' : '#fff';
+    } catch (e) {
+        return '#000';
+    }
+}
 
 // an array of TimedColor objects
 var all_timed_colors = [];
@@ -43,9 +80,9 @@ function getOldestColorTheme() {
 }
 
 // adds a new, colored button to the button_list div
-function appendButton(elementId, color) {
+function appendButton(elementId, name, color) {
     var b = document.createElement("button");
-    b.innerText = color;
+    b.innerText = name;
     b.style.background = color;
     b.style.width = "100px";
 
@@ -92,7 +129,8 @@ async function applyWindowTheme(new_window) {
     const saved_color = await browser.sessions.getWindowValue(new_window.id, "color");
     if (saved_color) {
         console.log("Restoring saved session color:", saved_color, "for window:", new_window.id);
-        browser.theme.update(new_window.id, { colors: { frame: saved_color, tab_background_text: '#000' } });
+        const saved_text_color = await browser.sessions.getWindowValue(new_window.id, "textColor") || '#000';
+        browser.theme.update(new_window.id, { colors: { frame: saved_color, tab_background_text: saved_text_color } });
         return;
     }
 
@@ -128,16 +166,44 @@ window.addEventListener("load", async function () { // DOMContentLoaded
             browser.theme.reset(current_window.id);
             // clear the saved session color so default theme is restored on restart too
             browser.sessions.removeWindowValue(current_window.id, "color");
+            browser.sessions.removeWindowValue(current_window.id, "textColor");
+        });
+    } catch (error) {
+        // ignore b/c called from background scripts; not by clicking on the extension icon
+    }
+
+    try {
+        const hueSlider = document.getElementById("hue_slider");
+        const satSlider = document.getElementById("sat_slider");
+        const litSlider = document.getElementById("lit_slider");
+        const preview   = document.getElementById("custom_color_preview");
+
+        function updatePreview() {
+            preview.style.background = hslToHex(+hueSlider.value, +satSlider.value, +litSlider.value);
+        }
+        hueSlider.addEventListener("input", updatePreview);
+        satSlider.addEventListener("input", updatePreview);
+        litSlider.addEventListener("input", updatePreview);
+        updatePreview();
+
+        document.getElementById("apply_custom").addEventListener("click", async function () {
+            const color = hslToHex(+hueSlider.value, +satSlider.value, +litSlider.value);
+            const textColor = getTextColor(color);
+            const theme = { colors: { frame: color, tab_background_text: textColor } };
+            let current_window = await browser.windows.getLastFocused();
+            browser.theme.update(current_window.id, theme);
+            browser.sessions.setWindowValue(current_window.id, "color", color);
+            browser.sessions.setWindowValue(current_window.id, "textColor", textColor);
         });
     } catch (error) {
         // ignore b/c called from background scripts; not by clicking on the extension icon
     }
 
     // populate the all_timed_colors array with a color + the current date/time
-    all_colors.forEach((color) => all_timed_colors.push(new TimedColor(color)));
+    all_colors.forEach(({ color }) => all_timed_colors.push(new TimedColor(color)));
 
     // build out the vertical list of HTML buttons
-    all_colors.forEach((color) => appendButton("button_list", color));
+    all_colors.forEach(({ name, color }) => appendButton("button_list", name, color));
 
     // scan all currently open windows and restore any saved session colors
     // this catches session-restored windows that were created before the onCreated listener registered
@@ -146,7 +212,8 @@ window.addEventListener("load", async function () { // DOMContentLoaded
         const saved_color = await browser.sessions.getWindowValue(win.id, "color");
         if (saved_color) {
             console.log("Startup: restoring color", saved_color, "for window", win.id);
-            browser.theme.update(win.id, { colors: { frame: saved_color, tab_background_text: '#000' } });
+            const saved_text_color = await browser.sessions.getWindowValue(win.id, "textColor") || '#000';
+            browser.theme.update(win.id, { colors: { frame: saved_color, tab_background_text: saved_text_color } });
         }
     }
 
