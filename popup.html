@@ -2,24 +2,34 @@
 <html>
 
 <head>
-    <title>Firefox Color Box</title>
+    <title>WindowTint</title>
 </head>
 
 <body>
     <br />
-    <div id="button_list">
-        <button id="reset" style="width:100px">Default</button><br /><br />
-    </div>
-    <div id="custom_color_section" style="margin: 6px 0; font-size: 11px; line-height: 2;">
-        <div>H <input type="range" id="hue_slider" min="0" max="360" value="200" style="width:90px; vertical-align:middle;"></div>
-        <div>S <input type="range" id="sat_slider" min="0" max="100" value="70"  style="width:90px; vertical-align:middle;"></div>
-        <div>L <input type="range" id="lit_slider" min="0" max="100" value="85"  style="width:90px; vertical-align:middle;"></div>
-        <span id="custom_color_preview" style="display:inline-block; width:60px; height:20px; border:1px solid #aaa; vertical-align:middle;"></span>
-        <button id="apply_custom" style="width:40px; vertical-align:middle;">Set</button>
-    </div>
-    <div id="settings">
-        <input type="checkbox" id="change_new" checked>
-        <label for="change_new">Change colors<br />for new windows</label>
+    <div style="display:inline-block;">
+        <button id="reset" style="width:206px; margin-bottom:6px;">Default</button>
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+            <div>
+                <div style="font-size:10px; text-align:center; color:#888; margin-bottom:3px;">Pastel</div>
+                <div id="button_list_light"></div>
+            </div>
+            <div>
+                <div style="font-size:10px; text-align:center; color:#888; margin-bottom:3px;">Dark</div>
+                <div id="button_list_dark"></div>
+            </div>
+        </div>
+        <div id="custom_color_section" style="margin: 6px 0; font-size: 11px; line-height: 2;">
+            <div>H <input type="range" id="hue_slider" min="0" max="360" value="200" style="width:90px; vertical-align:middle;"></div>
+            <div>S <input type="range" id="sat_slider" min="0" max="100" value="70"  style="width:90px; vertical-align:middle;"></div>
+            <div>L <input type="range" id="lit_slider" min="0" max="100" value="85"  style="width:90px; vertical-align:middle;"></div>
+            <span id="custom_color_preview" style="display:inline-block; width:60px; height:20px; border:1px solid #aaa; vertical-align:middle;"></span>
+            <button id="apply_custom" style="width:40px; vertical-align:middle;">Set</button>
+        </div>
+        <div id="settings">
+            <input type="checkbox" id="change_new" checked>
+            <label for="change_new">Change colors<br />for new windows</label>
+        </div>
     </div>
     <script src="popup.js"></script>
 </body>

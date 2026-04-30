@@ -1,6 +1,5 @@
 // popup.js
-// -John Taylor
-// 2023-11-14
+// Originally by John Taylor (https://github.com/jftuga/foxcolorbox)
 
 /*
 This script is instantiated twice:
@@ -11,9 +10,9 @@ Because of this, try/catch must be used in a few places to ignore exceptions
 because the caller is from background scripts; not by the user clicking on the extension icon (which is used by popup.html)
 */
 
-console.log("In foxcolorbox popup.js");
+console.log("In windowtint popup.js");
 
-// Tailwind 200-level palette — evenly spread hues, low saturation
+// Tailwind 200-level palette — evenly spread hues, soft pastels
 var all_colors = [
     { name: "Rose",       color: "#fecdd3" },
     { name: "Peach",      color: "#fed7aa" },
@@ -29,6 +28,22 @@ var all_colors = [
     { name: "Fog",        color: "#e2e8f0" },
 ];
 
+// Tailwind 700-level palette — same hue order as above, deep and saturated
+var dark_colors = [
+    { name: "Crimson",  color: "#be123c" },
+    { name: "Rust",     color: "#c2410c" },
+    { name: "Gold",     color: "#a16207" },
+    { name: "Fern",     color: "#4d7c0f" },
+    { name: "Pine",     color: "#15803d" },
+    { name: "Teal",     color: "#0f766e" },
+    { name: "Ocean",    color: "#0369a1" },
+    { name: "Cobalt",   color: "#4338ca" },
+    { name: "Plum",     color: "#6d28d9" },
+    { name: "Grape",    color: "#7e22ce" },
+    { name: "Berry",    color: "#be185d" },
+    { name: "Slate",    color: "#334155" },
+];
+
 function hslToHex(h, s, l) {
     s /= 100; l /= 100;
     const a = s * Math.min(l, 1 - l);
@@ -40,25 +55,47 @@ function hslToHex(h, s, l) {
     return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-// returns '#000' or '#fff' depending on the perceived brightness of a color
-function getTextColor(color) {
+function hexToHsl(hex) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h = 0, s = 0, l = (max + min) / 2;
+    if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+            case g: h = ((b - r) / d + 2) / 6; break;
+            case b: h = ((r - g) / d + 4) / 6; break;
+        }
+    }
+    return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)];
+}
+
+// returns '#000' or '#fff' based on perceived brightness; works in popup and background contexts
+function getTextColor(hex) {
     try {
         const canvas = document.createElement('canvas');
         canvas.width = canvas.height = 1;
         const ctx = canvas.getContext('2d');
-        ctx.fillStyle = color;
+        ctx.fillStyle = hex;
         ctx.fillRect(0, 0, 1, 1);
         const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
         return (0.299 * r + 0.587 * g + 0.114 * b) > 128 ? '#000' : '#fff';
     } catch (e) {
-        return '#000';
+        // fallback for background context where canvas is unavailable
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return (0.299 * r + 0.587 * g + 0.114 * b) > 128 ? '#000' : '#fff';
     }
 }
 
 // an array of TimedColor objects
 var all_timed_colors = [];
 
-// each color has an associated time that is was last used
+// each color has an associated time that it was last used
 class TimedColor {
     constructor(color) {
         this.color = color;
@@ -69,8 +106,10 @@ class TimedColor {
 
 // keep a history of what time the last color was used and then select the LRU color
 function getOldestColorTheme() {
+    const color = all_timed_colors[0].color;
+    const textColor = getTextColor(color);
     console.log("NEW WINDOW  : ", all_timed_colors[0], 0);
-    theme = { colors: { frame: all_timed_colors[0].color, tab_background_text: '#000' } };
+    const theme = { colors: { frame: color, tab_background_text: textColor } };
     let now = new Date();
     all_timed_colors[0].last_access = now.toISOString();
     all_timed_colors.sort((a, b) => {
@@ -79,23 +118,34 @@ function getOldestColorTheme() {
     return theme;
 }
 
-// adds a new, colored button to the button_list div
+// module-scope slider/preview references, assigned on popup load
+var hueSlider = null, satSlider = null, litSlider = null, colorPreview = null;
+
+function updatePreview() {
+    if (!hueSlider || !colorPreview) return;
+    colorPreview.style.background = hslToHex(+hueSlider.value, +satSlider.value, +litSlider.value);
+}
+
+// adds a colored button to the given element; clicking applies the theme and snaps the HSL sliders
 function appendButton(elementId, name, color) {
     var b = document.createElement("button");
     b.innerText = name;
     b.style.background = color;
+    b.style.color = getTextColor(color);
     b.style.width = "100px";
+    b.style.display = "block";
+    b.style.marginBottom = "2px";
 
     try {
         document.getElementById(elementId).appendChild(b);
-        document.getElementById(elementId).appendChild(document.createElement("br"));
     } catch (error) {
         // ignore b/c called from background scripts; not by clicking on the extension icon
         return;
     }
 
     b.onclick = async function () {
-        theme = { colors: { frame: color, tab_background_text: '#000' } };
+        const textColor = getTextColor(color);
+        const theme = { colors: { frame: color, tab_background_text: textColor } };
         var i = 0;
         // since the button list is small, just iterate over all objects instead of using a hash table
         for (const timed_color of all_timed_colors) {
@@ -113,8 +163,17 @@ function appendButton(elementId, name, color) {
 
         let current_window = await browser.windows.getLastFocused();
         browser.theme.update(current_window.id, theme);
-        // save the chosen color to the window's session so it survives browser restart
         browser.sessions.setWindowValue(current_window.id, "color", color);
+        browser.sessions.setWindowValue(current_window.id, "textColor", textColor);
+
+        // snap HSL sliders to match the selected preset
+        if (hueSlider) {
+            const [h, s, l] = hexToHsl(color);
+            hueSlider.value = h;
+            satSlider.value = s;
+            litSlider.value = l;
+            updatePreview();
+        }
     }
 }
 
@@ -155,11 +214,7 @@ async function applyWindowTheme(new_window) {
 }
 
 // fired when user clicks the extension's icon
-window.addEventListener("load", async function () { // DOMContentLoaded
-    let now = new Date();
-    // console.log("starting on:", now.toISOString());
-    // console.log("document.readyState: ", document.readyState);
-
+window.addEventListener("load", async function () {
     try {
         reset.addEventListener("click", async function () {
             let current_window = await browser.windows.getCurrent();
@@ -173,17 +228,24 @@ window.addEventListener("load", async function () { // DOMContentLoaded
     }
 
     try {
-        const hueSlider = document.getElementById("hue_slider");
-        const satSlider = document.getElementById("sat_slider");
-        const litSlider = document.getElementById("lit_slider");
-        const preview   = document.getElementById("custom_color_preview");
+        hueSlider    = document.getElementById("hue_slider");
+        satSlider    = document.getElementById("sat_slider");
+        litSlider    = document.getElementById("lit_slider");
+        colorPreview = document.getElementById("custom_color_preview");
 
-        function updatePreview() {
-            preview.style.background = hslToHex(+hueSlider.value, +satSlider.value, +litSlider.value);
-        }
         hueSlider.addEventListener("input", updatePreview);
         satSlider.addEventListener("input", updatePreview);
         litSlider.addEventListener("input", updatePreview);
+
+        // initialize sliders to reflect the current window's active theme color
+        const currentWindow = await browser.windows.getCurrent();
+        const currentTheme = await browser.theme.getCurrent(currentWindow.id);
+        if (currentTheme.colors && currentTheme.colors.frame && currentTheme.colors.frame.startsWith('#')) {
+            const [h, s, l] = hexToHsl(currentTheme.colors.frame);
+            hueSlider.value = h;
+            satSlider.value = s;
+            litSlider.value = l;
+        }
         updatePreview();
 
         document.getElementById("apply_custom").addEventListener("click", async function () {
@@ -199,11 +261,12 @@ window.addEventListener("load", async function () { // DOMContentLoaded
         // ignore b/c called from background scripts; not by clicking on the extension icon
     }
 
-    // populate the all_timed_colors array with a color + the current date/time
-    all_colors.forEach(({ color }) => all_timed_colors.push(new TimedColor(color)));
+    // populate the all_timed_colors array with all preset colors (both palettes)
+    [...all_colors, ...dark_colors].forEach(({ color }) => all_timed_colors.push(new TimedColor(color)));
 
-    // build out the vertical list of HTML buttons
-    all_colors.forEach(({ name, color }) => appendButton("button_list", name, color));
+    // build out the two columns of preset buttons
+    all_colors.forEach(({ name, color }) => appendButton("button_list_light", name, color));
+    dark_colors.forEach(({ name, color }) => appendButton("button_list_dark", name, color));
 
     // scan all currently open windows and restore any saved session colors
     // this catches session-restored windows that were created before the onCreated listener registered
