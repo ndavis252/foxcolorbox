@@ -6,13 +6,13 @@ clicking on the extension icon:
 
 ![windowtint](foxcolorbox.png)
 
-Firefox extension download: https://addons.mozilla.org/en-US/firefox/addon/foxcolorbox/
+Firefox extension download: https://addons.mozilla.org/en-US/firefox/addon/windowtint/
 
 ### Demo
 
 |                |                |
 |----------------|----------------|
-| ![](fcb-2.png) | ![](fcb-1.png) |
+| ![](fcb-3.png) | ![](fcb-1.png) |
 
 ## Acknowledgements
 * WindowTint is a fork of [foxcolorbox](https://github.com/jftuga/foxcolorbox) by [John Taylor](https://github.com/jftuga), who built the original extension and did the heavy lifting.
