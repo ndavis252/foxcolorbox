@@ -1,7 +1,7 @@
 {
     "description": "Change and customize browser window colors",
     "manifest_version": 2,
-    "version": "1.5",
+    "version": "1.6",
     "name": "WindowTint",
     "homepage_url": "https://github.com/ndavis252/foxcolorbox",
     "icons": {

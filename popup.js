@@ -118,6 +118,85 @@ function getOldestColorTheme() {
     return theme;
 }
 
+// Tab-URL fingerprint recovery layer.
+// browser.sessions values can be lost on unclean shutdown; the fingerprint map
+// in browser.storage.local survives, and lets us re-associate a color with a
+// restored window by overlapping its current tab URLs against the saved set.
+
+const FINGERPRINT_MATCH_THRESHOLD = 0.3; // Jaccard similarity required to restore
+const FINGERPRINT_MAX_ENTRIES = 100;
+
+async function getWindowUrlFingerprint(windowId) {
+    try {
+        const tabs = await browser.tabs.query({ windowId });
+        return tabs
+            .map(t => t.url || '')
+            .filter(u => u && !u.startsWith('about:') && !u.startsWith('moz-extension:'));
+    } catch (e) {
+        return [];
+    }
+}
+
+async function persistFingerprint(windowId, color, textColor) {
+    const urls = await getWindowUrlFingerprint(windowId);
+    if (urls.length === 0) return;
+    let fpId = await browser.sessions.getWindowValue(windowId, "fingerprintId");
+    if (!fpId) {
+        fpId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        browser.sessions.setWindowValue(windowId, "fingerprintId", fpId);
+    }
+    const { fingerprints = {} } = await browser.storage.local.get("fingerprints");
+    fingerprints[fpId] = { urls, color, textColor, ts: Date.now() };
+    const ids = Object.keys(fingerprints);
+    if (ids.length > FINGERPRINT_MAX_ENTRIES) {
+        ids.sort((a, b) => fingerprints[a].ts - fingerprints[b].ts);
+        for (const id of ids.slice(0, ids.length - FINGERPRINT_MAX_ENTRIES)) delete fingerprints[id];
+    }
+    await browser.storage.local.set({ fingerprints });
+}
+
+async function clearFingerprint(windowId) {
+    const fpId = await browser.sessions.getWindowValue(windowId, "fingerprintId");
+    if (!fpId) return;
+    browser.sessions.removeWindowValue(windowId, "fingerprintId");
+    const { fingerprints = {} } = await browser.storage.local.get("fingerprints");
+    if (fingerprints[fpId]) {
+        delete fingerprints[fpId];
+        await browser.storage.local.set({ fingerprints });
+    }
+}
+
+// Apply theme to the window and persist the choice to session + fingerprint map.
+async function saveWindowColor(windowId, color, textColor) {
+    browser.theme.update(windowId, { colors: { frame: color, tab_background_text: textColor } });
+    browser.sessions.setWindowValue(windowId, "color", color);
+    browser.sessions.setWindowValue(windowId, "textColor", textColor);
+    persistFingerprint(windowId, color, textColor);
+}
+
+// Find the stored fingerprint with the best URL overlap with a given window.
+// excludeIds avoids two windows claiming the same entry during startup scan.
+async function findFingerprintMatch(windowId, excludeIds) {
+    const urls = await getWindowUrlFingerprint(windowId);
+    if (urls.length === 0) return null;
+    const cur = new Set(urls);
+    const { fingerprints = {} } = await browser.storage.local.get("fingerprints");
+    let best = null, bestScore = 0;
+    for (const [id, fp] of Object.entries(fingerprints)) {
+        if (excludeIds && excludeIds.has(id)) continue;
+        const stored = new Set(fp.urls);
+        let inter = 0;
+        for (const u of cur) if (stored.has(u)) inter++;
+        const union = cur.size + stored.size - inter;
+        const score = union === 0 ? 0 : inter / union;
+        if (score > bestScore) { bestScore = score; best = { id, fp }; }
+    }
+    if (best && bestScore >= FINGERPRINT_MATCH_THRESHOLD) {
+        return { id: best.id, color: best.fp.color, textColor: best.fp.textColor, score: bestScore };
+    }
+    return null;
+}
+
 // module-scope slider/preview references, assigned on popup load
 var hueSlider = null, satSlider = null, litSlider = null, colorPreview = null;
 
@@ -162,9 +241,7 @@ function appendButton(elementId, name, color) {
         });
 
         let current_window = await browser.windows.getLastFocused();
-        browser.theme.update(current_window.id, theme);
-        browser.sessions.setWindowValue(current_window.id, "color", color);
-        browser.sessions.setWindowValue(current_window.id, "textColor", textColor);
+        await saveWindowColor(current_window.id, color, textColor);
 
         // snap HSL sliders to match the selected preset
         if (hueSlider) {
@@ -193,6 +270,18 @@ async function applyWindowTheme(new_window) {
         return;
     }
 
+    // session value missing — could be a genuinely new window OR a restored window
+    // whose session data was lost (e.g. unclean shutdown). Try the URL-fingerprint map.
+    const fpMatch = await findFingerprintMatch(new_window.id, null);
+    if (fpMatch) {
+        console.log("Restoring fingerprint-matched color:", fpMatch.color, "score:", fpMatch.score.toFixed(2));
+        browser.theme.update(new_window.id, { colors: { frame: fpMatch.color, tab_background_text: fpMatch.textColor } });
+        browser.sessions.setWindowValue(new_window.id, "color", fpMatch.color);
+        browser.sessions.setWindowValue(new_window.id, "textColor", fpMatch.textColor);
+        browser.sessions.setWindowValue(new_window.id, "fingerprintId", fpMatch.id);
+        return;
+    }
+
     // no saved color - this is a brand new window, apply LRU color if change_new is enabled
     x = browser.storage.local.get();
     x.then(async obj => {
@@ -206,9 +295,7 @@ async function applyWindowTheme(new_window) {
         }
         if (obj["change_new"] === true || has_cn_storage_key === true) {
             const theme = getOldestColorTheme();
-            browser.theme.update(new_window.id, theme);
-            // save the auto-assigned color to the session so it is restored on restart
-            browser.sessions.setWindowValue(new_window.id, "color", theme.colors.frame);
+            await saveWindowColor(new_window.id, theme.colors.frame, theme.colors.tab_background_text);
         }
     });
 }
@@ -222,6 +309,7 @@ window.addEventListener("load", async function () {
             // clear the saved session color so default theme is restored on restart too
             browser.sessions.removeWindowValue(current_window.id, "color");
             browser.sessions.removeWindowValue(current_window.id, "textColor");
+            await clearFingerprint(current_window.id);
         });
     } catch (error) {
         // ignore b/c called from background scripts; not by clicking on the extension icon
@@ -251,11 +339,8 @@ window.addEventListener("load", async function () {
         document.getElementById("apply_custom").addEventListener("click", async function () {
             const color = hslToHex(+hueSlider.value, +satSlider.value, +litSlider.value);
             const textColor = getTextColor(color);
-            const theme = { colors: { frame: color, tab_background_text: textColor } };
             let current_window = await browser.windows.getLastFocused();
-            browser.theme.update(current_window.id, theme);
-            browser.sessions.setWindowValue(current_window.id, "color", color);
-            browser.sessions.setWindowValue(current_window.id, "textColor", textColor);
+            await saveWindowColor(current_window.id, color, textColor);
         });
     } catch (error) {
         // ignore b/c called from background scripts; not by clicking on the extension icon
@@ -268,15 +353,54 @@ window.addEventListener("load", async function () {
     all_colors.forEach(({ name, color }) => appendButton("button_list_light", name, color));
     dark_colors.forEach(({ name, color }) => appendButton("button_list_dark", name, color));
 
-    // scan all currently open windows and restore any saved session colors
-    // this catches session-restored windows that were created before the onCreated listener registered
+    // scan all currently open windows and restore any saved session colors.
+    // first pass: apply windows that still have session values intact.
+    // second pass: for windows with missing session values, greedily match by
+    // tab-URL fingerprint against the persistent storage map.
     const existing_windows = await browser.windows.getAll();
+    const unresolved = [];
     for (const win of existing_windows) {
         const saved_color = await browser.sessions.getWindowValue(win.id, "color");
         if (saved_color) {
             console.log("Startup: restoring color", saved_color, "for window", win.id);
             const saved_text_color = await browser.sessions.getWindowValue(win.id, "textColor") || '#000';
             browser.theme.update(win.id, { colors: { frame: saved_color, tab_background_text: saved_text_color } });
+        } else {
+            unresolved.push(win.id);
+        }
+    }
+
+    if (unresolved.length > 0) {
+        // score each unresolved window against every stored fingerprint,
+        // then assign greedily highest-score-first so two windows can't claim the same entry.
+        const candidates = [];
+        for (const winId of unresolved) {
+            const urls = await getWindowUrlFingerprint(winId);
+            if (urls.length === 0) continue;
+            const cur = new Set(urls);
+            const { fingerprints = {} } = await browser.storage.local.get("fingerprints");
+            for (const [id, fp] of Object.entries(fingerprints)) {
+                const stored = new Set(fp.urls);
+                let inter = 0;
+                for (const u of cur) if (stored.has(u)) inter++;
+                const union = cur.size + stored.size - inter;
+                const score = union === 0 ? 0 : inter / union;
+                if (score >= FINGERPRINT_MATCH_THRESHOLD) {
+                    candidates.push({ winId, fpId: id, fp, score });
+                }
+            }
+        }
+        candidates.sort((a, b) => b.score - a.score);
+        const claimedWins = new Set(), claimedFps = new Set();
+        for (const c of candidates) {
+            if (claimedWins.has(c.winId) || claimedFps.has(c.fpId)) continue;
+            claimedWins.add(c.winId);
+            claimedFps.add(c.fpId);
+            console.log("Startup: fingerprint-matched color", c.fp.color, "for window", c.winId, "score:", c.score.toFixed(2));
+            browser.theme.update(c.winId, { colors: { frame: c.fp.color, tab_background_text: c.fp.textColor } });
+            browser.sessions.setWindowValue(c.winId, "color", c.fp.color);
+            browser.sessions.setWindowValue(c.winId, "textColor", c.fp.textColor);
+            browser.sessions.setWindowValue(c.winId, "fingerprintId", c.fpId);
         }
     }
 
@@ -313,3 +437,34 @@ window.addEventListener("load", async function () {
 
 // occurs when a new browser window is created
 browser.windows.onCreated.addListener(applyWindowTheme);
+
+// Keep fingerprints in sync as users navigate. Debounce per window so a flurry
+// of tab events (e.g. session restore loading many tabs) collapses into one write.
+const fpRefreshTimers = new Map();
+function scheduleFingerprintRefresh(windowId) {
+    if (windowId == null || windowId < 0) return;
+    const existing = fpRefreshTimers.get(windowId);
+    if (existing) clearTimeout(existing);
+    fpRefreshTimers.set(windowId, setTimeout(async () => {
+        fpRefreshTimers.delete(windowId);
+        try {
+            // only refresh windows the user has actually colored
+            const color = await browser.sessions.getWindowValue(windowId, "color");
+            if (!color) return;
+            const textColor = await browser.sessions.getWindowValue(windowId, "textColor") || '#000';
+            await persistFingerprint(windowId, color, textColor);
+        } catch (e) {
+            // window may have closed between events; ignore
+        }
+    }, 1500));
+}
+
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.url) scheduleFingerprintRefresh(tab.windowId);
+});
+browser.tabs.onRemoved.addListener((tabId, info) => {
+    if (info && !info.isWindowClosing) scheduleFingerprintRefresh(info.windowId);
+});
+browser.tabs.onCreated.addListener((tab) => {
+    scheduleFingerprintRefresh(tab.windowId);
+});
